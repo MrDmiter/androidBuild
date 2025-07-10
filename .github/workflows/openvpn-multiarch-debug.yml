@@ -26,9 +26,9 @@ jobs:
         # Define target Android ABIs. Host and API will be derived from these.
         abi:
           - "arm64-v8a"
-         # - "armeabi-v7a"
-         # - "x86"
-         # - "x86_64"
+          #- "armeabi-v7a"
+        #  - "x86"
+        #  - "x86_64"
 
     steps:
     - name: Checkout repository
@@ -160,6 +160,7 @@ jobs:
       run: |
         cd build
         
+        # Create a dedicated directory for OpenVPN build artifacts for the current ABI
         mkdir -p "openvpn_${{ matrix.abi }}"
         cd "openvpn_${{ matrix.abi }}"
 
@@ -170,23 +171,26 @@ jobs:
         export RANLIB="${{ steps.arch_vars.outputs.host }}-ranlib"
         export STRIP="${{ steps.arch_vars.outputs.host }}-strip"
         
-        # Remove or comment out these lines that disable pkg-config
-        # export PKG_CONFIG_PATH=""
-        # export PKG_CONFIG_LIBDIR=""
-        # export PKG_CONFIG="false" # <--- ВИДАЛИТИ ЦЕЙ РЯДОК
-
-        # Define CFLAGS, LDFLAGS, CPPFLAGS for Android cross-compilation
-        # -Wl,-z,max-page-size=0x4000 for 16KB page alignment
-        export CFLAGS="-fPIC -DPIC -O2 -DANDROID -D__ANDROID_API__=${{ steps.arch_vars.outputs.api }}"
-        export LDFLAGS="-Wl,-z,max-page-size=0x4000 -static-libgcc"
-        export CPPFLAGS="-DANDROID -D__ANDROID_API__=${{ steps.arch_vars.outputs.api }}"
-
+        # --- START CHANGES FOR PKG-CONFIG AND LDFLAGS ---
         # Define OpenSSL installation paths
         OPENSSL_INSTALL_DIR="$PWD/../openssl_${{ matrix.abi }}"
         
+        # Set PKG_CONFIG_PATH to point to OpenSSL's .pc files
+        export PKG_CONFIG_PATH="${OPENSSL_INSTALL_DIR}/lib/pkgconfig"
+        echo "PKG_CONFIG_PATH set to: $PKG_CONFIG_PATH"
+
         # Export OpenSSL CFLAGS and LIBS as environment variables for OpenVPN configure
+        # Also include them in LDFLAGS for configure's internal checks
         export OPENSSL_CFLAGS="-I${OPENSSL_INSTALL_DIR}/include"
         export OPENSSL_LIBS="-L${OPENSSL_INSTALL_DIR}/lib -lssl -lcrypto"
+        
+        # Define CFLAGS, LDFLAGS, CPPFLAGS for Android cross-compilation
+        # -Wl,-z,max-page-size=0x4000 for 16KB page alignment
+        export CFLAGS="-fPIC -DPIC -O2 -DANDROID -D__ANDROID_API__=${{ steps.arch_vars.outputs.api }} ${OPENSSL_CFLAGS}"
+        export LDFLAGS="-Wl,-z,max-page-size=0x4000 -static-libgcc ${OPENSSL_LIBS}" # Include OpenSSL libs here
+        export CPPFLAGS="-DANDROID -D__ANDROID_API__=${{ steps.arch_vars.outputs.api }} ${OPENSSL_CFLAGS}"
+
+        # --- END CHANGES ---
 
         echo "Running OpenVPN configure for ${{ matrix.abi }}..."
         ../openvpn-${{ github.event.inputs.openvpn_version }}/configure \
@@ -219,7 +223,7 @@ jobs:
           ac_cv_header_cap_ng_h=no \
           ac_cv_lib_pam_pam_start=no \
           ac_cv_header_security_pam_appl_h=no \
-          ac_cv_lib_dl_dlopen=no \
+          ac_cv_lib_dl_dlopen=yes \
           ac_cv_func_epoll_create=yes \
           ac_cv_func_sendmsg=yes \
           ac_cv_func_recvmsg=yes \
