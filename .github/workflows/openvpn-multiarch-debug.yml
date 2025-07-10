@@ -81,9 +81,9 @@ jobs:
     - name: Set up env
       run: |
         # Use the output from the 'setup_ndk_path' step to set environment variables
-        echo "ANDROID_NDK_HOME=${{ steps.setup_ndk_path.outputs.ndk-path }}" >> $GITHUB_ENV
-        echo "NDK_ROOT=${{ steps.setup_ndk_path.outputs.ndk-path }}" >> $GITHUB_ENV
-        echo "${{ steps.setup_ndk_path.outputs.ndk-path }}/toolchains/llvm/prebuilt/linux-x86_64/bin" >> $GITHUB_PATH
+        echo "ANDROID_NDK_HOME=${{ steps.setup_ndk_path.outputs.ndk-path }}" >> "$GITHUB_ENV"
+        echo "NDK_ROOT=${{ steps.setup_ndk_path.outputs.ndk-path }}" >> "$GITHUB_ENV"
+        echo "${{ steps.setup_ndk_path.outputs.ndk-path }}/toolchains/llvm/prebuilt/linux-x86_64/bin" >> "$GITHUB_PATH"
 
         # For good measure, also set them directly for the current shell context
         export ANDROID_NDK_HOME="${{ steps.setup_ndk_path.outputs.ndk-path }}"
@@ -114,11 +114,9 @@ jobs:
         cd build/openssl-${{ github.event.inputs.openssl_version }}
         
         # Use outputs from the Set Architecture Specific Variables step
-        local_api="${{ steps.arch_vars.outputs.api }}"
-        local_abi="${{ matrix.abi }}" # ABI from matrix
-
+        local_api_from_output="${{ steps.arch_vars.outputs.api }}" # Use a distinct name to avoid confusion
+        
         # OpenSSL Configure target mapping based on ABI
-        # This part is still necessary as Configure needs a specific target string (e.g., android-arm64)
         case "${{ matrix.abi }}" in
           arm64-v8a) target_configure="android-arm64" ;;
           armeabi-v7a) target_configure="android-arm" ;;
@@ -127,8 +125,8 @@ jobs:
         esac
 
         echo "Running OpenSSL Configure with target: $target_configure"; \
-        ./Configure $target_configure -D__ANDROID_API__=${{ local_api }} \
-          --prefix=$PWD/../openssl_${{ local_abi }} \
+        ./Configure "$target_configure" -D__ANDROID_API__="${{ local_api_from_output }}" \
+          --prefix="$PWD/../openssl_${{ matrix.abi }}" \
           no-shared no-tests -fPIC -DPIC
 
         # Execute make clean ONLY after Configure has generated the Makefile
@@ -140,9 +138,9 @@ jobs:
 
         # Verify OpenSSL installation
         echo "Contents of installed OpenSSL include directory:"
-        ls -l $PWD/../openssl_${{ local_abi }}/include
+        ls -l "$PWD/../openssl_${{ matrix.abi }}/include"
         echo "Contents of installed OpenSSL lib directory:"
-        ls -l $PWD/../openssl_${{ local_abi }}/lib
+        ls -l "$PWD/../openssl_${{ matrix.abi }}/lib"
 
 
     # Build OpenVPN client statically for each architecture
@@ -151,30 +149,30 @@ jobs:
         cd build
         
         # Use outputs from the Set Architecture Specific Variables step
-        local_host="${{ steps.arch_vars.outputs.host }}"
-        local_api="${{ steps.arch_vars.outputs.api }}"
-        local_abi="${{ matrix.abi }}"
+        host_from_output="${{ steps.arch_vars.outputs.host }}" # Distinct names
+        api_from_output="${{ steps.arch_vars.outputs.api }}"
+        abi_from_matrix="${{ matrix.abi }}"
 
-        mkdir -p openvpn_${{ local_abi }}
-        cd openvpn_${{ local_abi }}
+        mkdir -p "openvpn_${{ abi_from_matrix }}"
+        cd "openvpn_${{ abi_from_matrix }}"
 
-        export CC="${{ local_host }}${{ local_api }}-clang"
-        export CXX="${{ local_host }}${{ local_api }}-clang++"
-        export AR="${{ local_host }}-ar"
-        export RANLIB="${{ local_host }}-ranlib"
-        export STRIP="${{ local_host }}-strip"
+        export CC="${{ host_from_output }}${{ api_from_output }}-clang"
+        export CXX="${{ host_from_output }}${{ api_from_output }}-clang++"
+        export AR="${{ host_from_output }}-ar"
+        export RANLIB="${{ host_from_output }}-ranlib"
+        export STRIP="${{ host_from_output }}-strip"
 
-        export CFLAGS="-fPIC -DPIC -O2 -DANDROID -D__ANDROID_API__=${{ local_api }}"
+        export CFLAGS="-fPIC -DPIC -O2 -DANDROID -D__ANDROID_API__=${{ api_from_output }}"
         export LDFLAGS="-Wl,-z,max-page-size=0x4000 -static-libgcc"
-        export CPPFLAGS="-DANDROID -D__ANDROID_API__=${{ local_api }}"
+        export CPPFLAGS="-DANDROID -D__ANDROID_API__=${{ api_from_output }}"
 
-        OPENSSL_INSTALL_DIR=$PWD/../openssl_${{ local_abi }}
+        OPENSSL_INSTALL_DIR="$PWD/../openssl_${{ abi_from_matrix }}"
         OPENSSL_CFLAGS="-I${OPENSSL_INSTALL_DIR}/include"
         OPENSSL_LIBS="-L${OPENSSL_INSTALL_DIR}/lib -lssl -lcrypto"
 
         ../openvpn-${{ github.event.inputs.openvpn_version }}/configure \
-          --host=${{ local_host }} \
-          --prefix=$PWD/install \
+          --host="${{ host_from_output }}" \
+          --prefix="$PWD/install" \
           --enable-static --disable-shared \
           --disable-debug --enable-small \
           --disable-plugins --disable-management \
@@ -193,13 +191,14 @@ jobs:
 
         # Verify OpenVPN installation
         echo "Contents of installed OpenVPN directory:"
-        ls -l $PWD/install/sbin
+        ls -l "$PWD/install/sbin"
 
 
     # Build JNI shared library wrappers (libopenvpn.so, etc.)
     - name: Create Shared Library
       run: |
-        mkdir -p android_libs/lib/${{ matrix.abi }} # Use matrix.abi here
+        # Use matrix.abi here as it's the direct input from the matrix
+        mkdir -p "android_libs/lib/${{ matrix.abi }}"
         mkdir -p src_lib
 
         cat > src_lib/libopenvpn.c << 'EOF'
@@ -227,18 +226,18 @@ jobs:
         EOF
 
         echo "Compiling JNI shared library for ${{ matrix.abi }}..."; \
-        # Use outputs from the Set Architecture Specific Variables step for CC
-        ${{ steps.arch_vars.outputs.host }}${{ steps.arch_vars.outputs.api }}-clang -shared -fPIC -llog \
+        # Use outputs from the Set Architecture Specific Variables step for CC components
+        "${{ steps.arch_vars.outputs.host }}${{ steps.arch_vars.outputs.api }}-clang" -shared -fPIC -llog \
           -Wl,-z,max-page-size=0x4000 \
-          -o android_libs/lib/${{ matrix.abi }}/libopenvpn.so \
+          -o "android_libs/lib/${{ matrix.abi }}/libopenvpn.so" \
           src_lib/libopenvpn.c
 
-        cp android_libs/lib/${{ matrix.abi }}/libopenvpn.so android_libs/lib/${{ matrix.abi }}/libopvpnutil.so
-        cp android_libs/lib/${{ matrix.abi }}/libopenvpn.so android_libs/lib/${{ matrix.abi }}/libovpnexec.so
+        cp "android_libs/lib/${{ matrix.abi }}/libopenvpn.so" "android_libs/lib/${{ matrix.abi }}/libopvpnutil.so"
+        cp "android_libs/lib/${{ matrix.abi }}/libopenvpn.so" "android_libs/lib/${{ matrix.abi }}/libovpnexec.so"
 
     # Upload output artifacts
     - name: Upload artifacts
       uses: actions/upload-artifact@v4
       with:
         name: openvpn-libs-${{ matrix.abi }}
-        path: android_libs/lib/${{ matrix.abi }}
+        path: "android_libs/lib/${{ matrix.abi }}"
