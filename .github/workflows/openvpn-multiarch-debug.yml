@@ -38,7 +38,8 @@ jobs:
     - name: Install dependencies
       run: |
         sudo apt-get update
-        sudo apt-get install -y build-essential autoconf automake libtool pkg-config echo 'Downloading sources...'; wget libcap-ng-dev
+        sudo apt-get install -y build-essential autoconf automake libtool pkg-config libcap-ng-dev
+        echo 'Downloading sources...'; 
 
     # Set up the Android NDK
     - name: Setup NDK
