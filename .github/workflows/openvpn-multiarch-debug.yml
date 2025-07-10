@@ -102,10 +102,29 @@ jobs:
         export LDFLAGS="-Wl,-z,max-page-size=0x4000 -static-libgcc"
         export CPPFLAGS="-DANDROID -D__ANDROID_API__=${{ matrix.arch.api }}"
 
-        ../openvpn-${{ github.event.inputs.openvpn_version }}/configure           --host=${{ matrix.arch.host }}           --prefix=$PWD/install           --enable-static --disable-shared           --disable-debug --enable-small           --disable-plugins --disable-management           --disable-systemd --disable-iproute2           --disable-dco --disable-selinux           --disable-lz4 --disable-lzo --disable-pkcs11           --disable-server --disable-multi --disable-user-group           --disable-chroot --disable-capability-dropping           --disable-linuxdir --disable-dep-check           --without-cap-ng --with-crypto-library=openssl           OPENSSL_CFLAGS="-I$PWD/../openssl_${{ matrix.arch.abi }}/include"           OPENSSL_LIBS="-L$PWD/../openssl_${{ matrix.arch.abi }}/lib -lssl -lcrypto"
+        OPENSSL_INSTALL_DIR=$PWD/../openssl_${{ matrix.arch.abi }}
+        OPENSSL_CFLAGS="-I${OPENSSL_INSTALL_DIR}/include"
+        OPENSSL_LIBS="-L${OPENSSL_INSTALL_DIR}/lib -lssl -lcrypto"
 
-        echo 'Running make...'; make -j$(nproc)
-        echo 'Installing OpenVPN...'; make install
+        # Запускаємо configure OpenVPN, передаючи шляхи OpenSSL
+        ../openvpn-${{ github.event.inputs.openvpn_version }}/configure \
+          --host=${{ matrix.arch.host }} \
+          --prefix=$PWD/install \
+          --enable-static --disable-shared \
+          --disable-debug --enable-small \
+          --disable-plugins --disable-management \
+          --disable-systemd --disable-iproute2 \
+          --disable-dco --disable-selinux \
+          --disable-lz4 --disable-lzo --disable-pkcs11 \
+          --disable-server --disable-multi --disable-user-group \
+          --disable-chroot --disable-capability-dropping \
+          --disable-linuxdir --disable-dep-check \
+          --without-cap-ng --with-crypto-library=openssl \
+          ${OPENSSL_CFLAGS} \
+          ${OPENSSL_LIBS}
+
+        echo 'Running make for OpenVPN...'; make -j$(nproc)
+        echo 'Installing OpenVPN binaries...'; make install
 
     # Build JNI shared library wrappers (libopenvpn.so, etc.)
     - name: Create Shared Library
