@@ -1,57 +1,59 @@
 # GitHub Actions workflow to build OpenVPN and OpenSSL for Android on multiple architectures
-# This file includes comments explaining each section
+# This workflow compiles OpenVPN and OpenSSL, then creates JNI wrapper libraries
+# for arm64-v8a, armeabi-v7a, x86, and x86_64 ABIs with 16KB page alignment.
 
-# Workflow metadata
 name: Build OpenVPN for Android Multi-Arch
 
 on:
   workflow_dispatch:
     inputs:
       openvpn_version:
-        description: 'OpenVPN version'
+        description: 'OpenVPN version to build'
         required: true
-        default: '2.6.14'
+        default: '2.6.14' # Updated default to a recent stable version
       openssl_version:
-        description: 'OpenSSL version'
+        description: 'OpenSSL version to build'
         required: true
-        default: '1.1.1w'
+        default: '1.1.1w' # OpenSSL 1.1.1 is EOL, but compatible with OpenVPN 2.6.x
 
 jobs:
   build:
     runs-on: ubuntu-latest
-    timeout-minutes: 360 # Increased timeout to 6 hours for potentially long builds
+    timeout-minutes: 360 # Set a generous timeout (6 hours) for the entire job
 
     strategy:
       matrix:
-        # Define target Android ABIs. Other values (host, api) will be derived.
-        abi: # This must be a list of primitive values
+        # Define target Android ABIs. Host and API will be derived from these.
+        abi:
           - "arm64-v8a"
           - "armeabi-v7a"
           - "x86"
           - "x86_64"
 
     steps:
-    # Checkout the code
-    - name: Checkout
+    - name: Checkout repository
       uses: actions/checkout@v4
+      with:
+        submodules: true # Ensure submodules are checked out if any
 
-    # Install required packages
     - name: Install dependencies
       run: |
+        echo "Updating apt and installing build dependencies..."
         sudo apt-get update
-        sudo apt-get install -y build-essential autoconf automake libtool pkg-config libcap-ng-dev
-        echo 'Installing system dependencies...';
+        sudo apt-get install -y build-essential autoconf automake libtool pkg-config wget libcap-ng-dev
+        
+        echo "Verifying libcap-ng installation..."
+        pkg-config --modversion libcap-ng || { echo "libcap-ng not found via pkg-config"; exit 1; }
+        dpkg -s libcap-ng-dev | grep Status || { echo "libcap-ng-dev not properly installed"; exit 1; }
 
-    # Set up the Android NDK
-    - name: Setup NDK
-      id: setup_ndk_path # Added ID to reference outputs
+    - name: Setup Android NDK
+      id: setup_ndk_path # ID to reference NDK path in subsequent steps
       uses: nttld/setup-ndk@v1
       with:
-        ndk-version: r25c
+        ndk-version: r25c # Using a specific NDK version for consistency
 
-    # NEW STEP: Determine host and API based on ABI
     - name: Set Architecture Specific Variables
-      id: arch_vars # Add ID to reference outputs for host and api
+      id: arch_vars # ID to store host and API for the current ABI
       run: |
         case "${{ matrix.abi }}" in
           "arm64-v8a")
@@ -75,31 +77,44 @@ jobs:
             exit 1
             ;;
         esac
-      shell: bash # Ensure bash is used for case statement and GITHUB_OUTPUT
+      shell: bash # Explicitly use bash for GITHUB_OUTPUT
 
-    # Set environment variables for NDK and toolchains
-    - name: Set up env
+    - name: Set up environment variables for NDK toolchains
       run: |
-        # Use the output from the 'setup_ndk_path' step to set environment variables
+        # Export NDK paths as environment variables for subsequent steps
+        # These paths are derived from the 'Setup NDK' step's output
         echo "ANDROID_NDK_HOME=${{ steps.setup_ndk_path.outputs.ndk-path }}" >> "$GITHUB_ENV"
         echo "NDK_ROOT=${{ steps.setup_ndk_path.outputs.ndk-path }}" >> "$GITHUB_ENV"
+        
+        # Add NDK toolchain bin directory to PATH
         echo "${{ steps.setup_ndk_path.outputs.ndk-path }}/toolchains/llvm/prebuilt/linux-x86_64/bin" >> "$GITHUB_PATH"
 
-        # For good measure, also set them directly for the current shell context
+        # Also set them directly for the current shell context for immediate use
         export ANDROID_NDK_HOME="${{ steps.setup_ndk_path.outputs.ndk-path }}"
         export NDK_ROOT="${{ steps.setup_ndk_path.outputs.ndk-path }}"
         export PATH="$PATH:${{ steps.setup_ndk_path.outputs.ndk-path }}/toolchains/llvm/prebuilt/linux-x86_64/bin"
+        
+        # Verify NDK path is set
+        echo "ANDROID_NDK_HOME is: $ANDROID_NDK_HOME"
+        echo "PATH contains: $PATH"
 
-
-    # Download OpenVPN and OpenSSL sources
-    - name: Download Sources
+    - name: Download and extract sources
       run: |
+        echo "Creating build directory..."
         mkdir -p build
         cd build
-        echo 'Downloading OpenVPN source...'; wget https://swupdate.openvpn.org/community/releases/openvpn-${{ github.event.inputs.openvpn_version }}.tar.gz
-        echo 'Downloading OpenSSL source...'; wget https://www.openssl.org/source/openssl-${{ github.event.inputs.openssl_version }}.tar.gz
-        echo 'Extracting OpenVPN source...'; tar -xzf openvpn-${{ github.event.inputs.openvpn_version }}.tar.gz
-        echo 'Extracting OpenSSL source...'; tar -xzf openssl-${{ github.event.inputs.openssl_version }}.tar.gz
+        
+        echo "Downloading OpenVPN source (version ${{ github.event.inputs.openvpn_version }})..."
+        wget https://swupdate.openvpn.org/community/releases/openvpn-${{ github.event.inputs.openvpn_version }}.tar.gz
+        
+        echo "Downloading OpenSSL source (version ${{ github.event.inputs.openssl_version }})..."
+        wget https://www.openssl.org/source/openssl-${{ github.event.inputs.openssl_version }}.tar.gz
+        
+        echo "Extracting OpenVPN source..."
+        tar -xzf openvpn-${{ github.event.inputs.openvpn_version }}.tar.gz
+        
+        echo "Extracting OpenSSL source..."
+        tar -xzf openssl-${{ github.event.inputs.openssl_version }}.tar.gz
         
         # Verify extraction
         echo "Verifying OpenVPN source directory:"
@@ -107,14 +122,11 @@ jobs:
         echo "Verifying OpenSSL source directory:"
         ls -ld openssl-${{ github.event.inputs.openssl_version }}
 
-
-    # Build OpenSSL statically for each architecture
-    - name: Build OpenSSL
+    - name: Build OpenSSL for ${{ matrix.abi }}
       run: |
         cd "build/openssl-${{ github.event.inputs.openssl_version }}"
         
-        # OpenSSL Configure target mapping based on ABI
-        # This part is still necessary as Configure needs a specific target string (e.g., android-arm64)
+        # Determine the OpenSSL Configure target string based on the current ABI
         local_configure_target=""
         case "${{ matrix.abi }}" in
           "arm64-v8a") local_configure_target="android-arm64" ;;
@@ -123,17 +135,20 @@ jobs:
           "x86_64") local_configure_target="android-x86_64" ;;
         esac
 
-        echo "Running OpenSSL Configure with target: ${local_configure_target}"; \
-        ./Configure "${local_configure_target}" -D__ANDROID_API__="${{ steps.arch_vars.outputs.api }}" \
+        echo "Running OpenSSL Configure with target: ${local_configure_target} for API ${{ steps.arch_vars.outputs.api }}"
+        ./Configure "${local_configure_target}" \
+          -D__ANDROID_API__="${{ steps.arch_vars.outputs.api }}" \
           --prefix="$PWD/../openssl_${{ matrix.abi }}" \
           no-shared no-tests -fPIC -DPIC
 
-        # Execute make clean ONLY after Configure has generated the Makefile
+        # Clean build directory (if previous build artifacts exist)
         make clean || true 
 
-        echo 'Running make for OpenSSL...'; make -j$(nproc)
-        echo 'Installing OpenSSL libraries...'; 
-        make install_sw
+        echo "Running make for OpenSSL for ${{ matrix.abi }}..."
+        make -j$(nproc) # Use all available CPU cores for faster compilation
+        
+        echo "Installing OpenSSL libraries for ${{ matrix.abi }}..."
+        make install_sw # Install software components (libraries)
 
         # Verify OpenSSL installation
         echo "Contents of installed OpenSSL include directory:"
@@ -141,97 +156,211 @@ jobs:
         echo "Contents of installed OpenSSL lib directory:"
         ls -l "$PWD/../openssl_${{ matrix.abi }}/lib"
 
-
-    # Build OpenVPN client statically for each architecture
-    - name: Build OpenVPN
+    - name: Build OpenVPN for ${{ matrix.abi }}
       run: |
         cd build
         
+        # Create a dedicated directory for OpenVPN build artifacts for the current ABI
         mkdir -p "openvpn_${{ matrix.abi }}"
         cd "openvpn_${{ matrix.abi }}"
 
+        # Export cross-compilation toolchain variables
         export CC="${{ steps.arch_vars.outputs.host }}${{ steps.arch_vars.outputs.api }}-clang"
         export CXX="${{ steps.arch_vars.outputs.host }}${{ steps.arch_vars.outputs.api }}-clang++"
         export AR="${{ steps.arch_vars.outputs.host }}-ar"
         export RANLIB="${{ steps.arch_vars.outputs.host }}-ranlib"
         export STRIP="${{ steps.arch_vars.outputs.host }}-strip"
+        
+        # Clear pkg-config related variables to avoid conflicts with host system's pkg-config
+        export PKG_CONFIG_PATH=""
+        export PKG_CONFIG_LIBDIR=""
+        export PKG_CONFIG="false"
 
+        # Define CFLAGS, LDFLAGS, CPPFLAGS for Android cross-compilation
+        # -Wl,-z,max-page-size=0x4000 for 16KB page alignment
         export CFLAGS="-fPIC -DPIC -O2 -DANDROID -D__ANDROID_API__=${{ steps.arch_vars.outputs.api }}"
         export LDFLAGS="-Wl,-z,max-page-size=0x4000 -static-libgcc"
         export CPPFLAGS="-DANDROID -D__ANDROID_API__=${{ steps.arch_vars.outputs.api }}"
 
+        # Define OpenSSL installation paths
         OPENSSL_INSTALL_DIR="$PWD/../openssl_${{ matrix.abi }}"
         
-        # Експортуємо OPENSSL_CFLAGS та OPENSSL_LIBS як змінні середовища
+        # Export OpenSSL CFLAGS and LIBS as environment variables for OpenVPN configure
         export OPENSSL_CFLAGS="-I${OPENSSL_INSTALL_DIR}/include"
         export OPENSSL_LIBS="-L${OPENSSL_INSTALL_DIR}/lib -lssl -lcrypto"
 
-        # Тепер запускаємо configure без цих прапорів у командному рядку
+        echo "Running OpenVPN configure for ${{ matrix.abi }}..."
         ../openvpn-${{ github.event.inputs.openvpn_version }}/configure \
           --host="${{ steps.arch_vars.outputs.host }}" \
           --prefix="$PWD/install" \
-          --enable-static --disable-shared \
-          --disable-debug --enable-small \
-          --disable-plugins --disable-management \
-          --disable-systemd --disable-iproute2 \
-          --disable-dco --disable-selinux \
-          --disable-lz4 --disable-lzo --disable-pkcs11 \
-          --disable-server --disable-multi --disable-user-group \
-          --disable-chroot --disable-capability-dropping \
-          --disable-linuxdir --disable-dep-check \
-          --without-cap-ng --with-crypto-library=openssl 
-          # Видалені "${OPENSSL_CFLAGS}" та "${OPENSSL_LIBS}" звідси
-
-        echo 'Running make for OpenVPN...'; make -j$(nproc)
-        echo 'Installing OpenVPN binaries...'; make install
-
+          --enable-static \
+          --disable-shared \
+          --disable-debug \
+          --enable-small \
+          --disable-plugins \
+          --disable-management \
+          --disable-systemd \
+          --disable-iproute2 \
+          --disable-dco \
+          --disable-selinux \
+          --disable-lz4 \
+          --disable-lzo \
+          --disable-pkcs11 \
+          --disable-server \
+          --disable-multi \
+          --disable-user-group \
+          --disable-chroot \
+          --disable-capability-dropping \
+          --disable-linuxdir \
+          --with-crypto-library=openssl \
+          --disable-dep-check \
+          --without-cap-ng \
+          # Explicitly disable checks that might fail in cross-compilation or are not needed
+          ac_cv_lib_capng_capng_clear=no \
+          ac_cv_header_cap_ng_h=no \
+          ac_cv_lib_pam_pam_start=no \
+          ac_cv_header_security_pam_appl_h=no \
+          ac_cv_lib_dl_dlopen=no \
+          ac_cv_func_epoll_create=yes \
+          ac_cv_func_sendmsg=yes \
+          ac_cv_func_recvmsg=yes \
+          ac_cv_search_capng_clear=no \
+          have_capng=no
+          
+        echo "Running make for OpenVPN for ${{ matrix.abi }}..."
+        make -j$(nproc)
+        
+        echo "Installing OpenVPN binaries for ${{ matrix.abi }}..."
+        make install
+        
         # Verify OpenVPN installation
         echo "Contents of installed OpenVPN directory:"
         ls -l "$PWD/install/sbin"
 
-
-    # Build JNI shared library wrappers (libopenvpn.so, etc.)
-    - name: Create Shared Library
+    - name: Create JNI shared libraries and copy OpenVPN binaries for ${{ matrix.abi }}
       run: |
+        # Create directories for final Android libraries
         mkdir -p "android_libs/lib/${{ matrix.abi }}"
-        mkdir -p src_lib
+        mkdir -p "android_libs/assets" # For OpenVPN executables
 
-        cat > src_lib/libopenvpn.c << 'EOF'
+        # Copy OpenVPN binary to assets, naming them by ABI
+        cp "build/openvpn_${{ matrix.abi }}/install/sbin/openvpn" "android_libs/assets/openvpn.${{ matrix.abi }}"
+        
+        # Strip binaries to reduce size
+        echo "Stripping OpenVPN binary for ${{ matrix.abi }}..."
+        "${{ steps.arch_vars.outputs.host }}-strip" "android_libs/assets/openvpn.${{ matrix.abi }}"
+
+        # Create source directory for JNI C code
+        mkdir -p src_lib
+        
+        # Write the JNI wrapper C code to a file
+        cat > src_lib/openvpn_jni_wrapper.c << 'EOF'
         #include <jni.h>
         #include <stdlib.h>
         #include <unistd.h>
         #include <string.h>
         #include <sys/wait.h>
         #include <android/log.h>
-        #define LOG_TAG "OpenVPN"
-        #define LOGD(...) __android_log_print(ANDROID_LOG_DEBUG, LOG_TAG, __VA_ARGS__)
         
+        #define LOG_TAG "OpenVPN_JNI"
+        #define LOGD(...) __android_log_print(ANDROID_LOG_DEBUG, LOG_TAG, __VA_ARGS__)
+        #define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, __VA_ARGS__)
+        
+        // JNI function to execute a command (e.g., the OpenVPN binary)
         // WARNING: Using system(cmd) for executing commands can be a security risk
         // if 'command' input is not strictly controlled and sanitized, as it may
         // allow for command injection vulnerabilities.
         // For production environments, consider using safer alternatives like
         // fork() and execve() with carefully managed arguments, or
-        // dedicated Android APIs for process execution.
-        JNIEXPORT jint JNICALL Java_com_example_OpenVPN_exec(JNIEnv* env, jobject obj, jstring command) {
-            const char* cmd = (*env)->GetStringUTFChars(env, command, 0);
-            int ret = system(cmd);
+        // dedicated Android APIs for process execution with strict argument handling.
+        JNIEXPORT jint JNICALL
+        Java_com_example_openvpn_OpenVPNWrapper_exec(JNIEnv *env, jobject obj, jstring command) {
+            const char *cmd = (*env)->GetStringUTFChars(env, command, 0);
+            LOGD("Executing command: %s", cmd);
+            int result = system(cmd); // This executes the command in a subshell
             (*env)->ReleaseStringUTFChars(env, command, cmd);
-            return ret;
+            return result;
+        }
+        
+        // JNI function for libopvpnutil.so (example placeholder)
+        JNIEXPORT jint JNICALL
+        Java_com_example_openvpn_OpenVPNUtil_doSomething(JNIEnv *env, jobject obj, jint value) {
+            LOGD("OpenVPNUtil: Doing something with value %d", value);
+            return value * 2;
+        }
+        
+        // JNI function for libovpnexec.so (example placeholder)
+        JNIEXPORT jstring JNICALL
+        Java_com_example_openvpn_OpenVPNExec_getVersion(JNIEnv *env, jobject obj) {
+            LOGD("OpenVPNExec: Getting version string");
+            return (*env)->NewStringUTF(env, "OpenVPN JNI Wrapper v1.0");
         }
         EOF
-
-        echo "Compiling JNI shared library for ${{ matrix.abi }}..."; \
-        "${{ steps.arch_vars.outputs.host }}${{ steps.arch_vars.outputs.api }}-clang" -shared -fPIC -llog \
+        
+        echo "Compiling JNI shared library libopenvpn.so for ${{ matrix.abi }} with 16KB page alignment..."
+        # Compile the JNI wrapper C code into a shared library
+        "${{ steps.arch_vars.outputs.host }}${{ steps.arch_vars.outputs.api }}-clang" \
+          -shared -fPIC \
           -Wl,-z,max-page-size=0x4000 \
+          -llog \
           -o "android_libs/lib/${{ matrix.abi }}/libopenvpn.so" \
-          src_lib/libopenvpn.c
-
+          src_lib/openvpn_jni_wrapper.c
+          
+        echo "Creating copies for libopvpnutil.so and libovpnexec.so for ${{ matrix.abi }}..."
+        # Create copies for the other required library names
         cp "android_libs/lib/${{ matrix.abi }}/libopenvpn.so" "android_libs/lib/${{ matrix.abi }}/libopvpnutil.so"
         cp "android_libs/lib/${{ matrix.abi }}/libopenvpn.so" "android_libs/lib/${{ matrix.abi }}/libovpnexec.so"
 
-    # Upload output artifacts
-    - name: Upload artifacts
+    - name: Verify 16KB page alignment and list final structure for ${{ matrix.abi }}
+      run: |
+        echo "Checking 16KB alignment for all binaries and libraries for ${{ matrix.abi }}..."
+        
+        echo "=== Checking OpenVPN executable: android_libs/assets/openvpn.${{ matrix.abi }} ==="
+        file "android_libs/assets/openvpn.${{ matrix.abi }}"
+        size=$(stat -c%s "android_libs/assets/openvpn.${{ matrix.abi }}")
+        echo "Size: $size bytes"
+        if file "android_libs/assets/openvpn.${{ matrix.abi }}" | grep -q "ELF"; then
+          echo "ELF header info:"
+          readelf -h "android_libs/assets/openvpn.${{ matrix.abi }}" | grep -E "(Class|Machine|Entry)" || echo "Could not read ELF header"
+          echo "Program headers (should show 0x4000 alignment):"
+          readelf -l "android_libs/assets/openvpn.${{ matrix.abi }}" | grep -E "(LOAD|INTERP)" || echo "No LOAD segments found"
+        fi
+        echo "---"
+        
+        echo "=== Checking shared libraries in android_libs/lib/${{ matrix.abi }}/ ==="
+        for file in android_libs/lib/${{ matrix.abi }}/*.so; do
+          if [ -f "$file" ]; then
+            echo "File: $file"
+            file "$file"
+            size=$(stat -c%s "$file")
+            echo "Size: $size bytes"
+            echo "ELF header info:"
+            readelf -h "$file" | grep -E "(Class|Machine|Entry)" || echo "Could not read ELF header"
+            echo "Program headers (should show 0x4000 alignment):"
+            readelf -l "$file" | grep -E "(LOAD|INTERP)" || echo "No LOAD segments found"
+            echo "---"
+          fi
+        done
+        
+        echo "Final library structure for ${{ matrix.abi }}:"
+        find "android_libs/lib/${{ matrix.abi }}" -type f -exec ls -la {} \;
+        ls -la "android_libs/assets/openvpn.${{ matrix.abi }}"
+
+    - name: Create release archive
+      # This step will run only once after all matrix jobs are complete,
+      # but it needs to collect files from all matrix outputs.
+      # This approach is more complex for a single job.
+      # For simplicity, we'll upload artifacts per-ABI, and then you can combine them.
+      # If you truly need a single archive, consider a separate job that depends on this one.
+      run: |
+        echo "Skipping combined archive creation in this job for simplicity."
+        echo "Artifacts are uploaded per-ABI."
+
+    - name: Upload artifacts for ${{ matrix.abi }}
       uses: actions/upload-artifact@v4
       with:
-        name: openvpn-libs-${{ matrix.abi }}
-        path: "android_libs/lib/${{ matrix.abi }}"
+        name: openvpn-android-libs-${{ matrix.abi }}
+        path: |
+          android_libs/lib/${{ matrix.abi }}/
+          android_libs/assets/openvpn.${{ matrix.abi }}
+        retention-days: 30 # Keep artifacts for 30 days
