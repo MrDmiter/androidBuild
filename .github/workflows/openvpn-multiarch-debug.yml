@@ -160,7 +160,6 @@ jobs:
       run: |
         cd build
         
-        # Create a dedicated directory for OpenVPN build artifacts for the current ABI
         mkdir -p "openvpn_${{ matrix.abi }}"
         cd "openvpn_${{ matrix.abi }}"
 
@@ -171,10 +170,10 @@ jobs:
         export RANLIB="${{ steps.arch_vars.outputs.host }}-ranlib"
         export STRIP="${{ steps.arch_vars.outputs.host }}-strip"
         
-        # Clear pkg-config related variables to avoid conflicts with host system's pkg-config
-        export PKG_CONFIG_PATH=""
-        export PKG_CONFIG_LIBDIR=""
-        export PKG_CONFIG="false"
+        # Remove or comment out these lines that disable pkg-config
+        # export PKG_CONFIG_PATH=""
+        # export PKG_CONFIG_LIBDIR=""
+        # export PKG_CONFIG="false" # <--- ВИДАЛИТИ ЦЕЙ РЯДОК
 
         # Define CFLAGS, LDFLAGS, CPPFLAGS for Android cross-compilation
         # -Wl,-z,max-page-size=0x4000 for 16KB page alignment
