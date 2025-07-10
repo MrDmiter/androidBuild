@@ -89,12 +89,11 @@ jobs:
         esac
 
         echo "Running OpenSSL Configure with target: $target"; \
-        # Explicitly pass NDK platform to OpenSSL Configure if needed, and cross-compile prefix
         ./Configure $target -D__ANDROID_API__=${{ matrix.arch.api }} \
           --prefix=$PWD/../openssl_${{ matrix.arch.abi }} \
-          no-shared no-tests -fPIC -DPIC \
-          --with-ndk-platform=${{ matrix.arch.api }} --cross-compile-prefix=${{ steps.setup_ndk_path.outputs.ndk-path }}/toolchains/llvm/prebuilt/linux-x86_64/bin/${{ matrix.arch.host }}${{ matrix.arch.api }}-
-        
+          no-shared no-tests -fPIC -DPIC
+          # --with-ndk-platform=${{ matrix.arch.api }} --cross-compile-prefix=${{ steps.setup_ndk_path.outputs.ndk-path }}/toolchains/llvm/prebuilt/linux-x86_64/bin/${{ matrix.arch.host }}${{ matrix.arch.api }}- # <-- Видалити або закоментувати цей рядок
+
         # Execute make clean ONLY after Configure has generated the Makefile
         make clean || true 
 
