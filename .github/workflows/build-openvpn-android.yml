@@ -1,0 +1,65 @@
+name: Build OpenVPN Android
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  build:
+    name: Build for ${{ matrix.abi }}
+    runs-on: ubuntu-latest
+
+    strategy:
+      matrix:
+        abi: [armeabi-v7a, arm64-v8a, x86, x86_64]
+
+    env:
+      ANDROID_NDK_VERSION: "26.1.10909125"
+      API_LEVEL: "21"
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Set up JDK
+        uses: actions/setup-java@v3
+        with:
+          distribution: 'temurin'
+          java-version: '11'
+
+      - name: Download Android NDK
+        uses: nttld/setup-ndk@v1
+        with:
+          ndk-version: ${{ env.ANDROID_NDK_VERSION }}
+          add-to-path: true
+
+      - name: Create build directory
+        run: mkdir -p build/${{ matrix.abi }}
+
+      - name: Configure with CMake
+        working-directory: build/${{ matrix.abi }}
+        run: |
+          cmake ../.. \
+            -DCMAKE_TOOLCHAIN_FILE=$ANDROID_NDK_HOME/build/cmake/android.toolchain.cmake \
+            -DANDROID_ABI=${{ matrix.abi }} \
+            -DANDROID_PLATFORM=android-${{ env.API_LEVEL }} \
+            -DANDROID_STL=c++_static \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_SHARED_LINKER_FLAGS="-Wl,-z,relro,-z,now -Wl,-Ttext-segment=0x4000" \
+            -DCMAKE_C_FLAGS="-D__ANDROID__" \
+            -DCMAKE_CXX_FLAGS="-D__ANDROID__"
+
+      - name: Build libraries
+        working-directory: build/${{ matrix.abi }}
+        run: cmake --build . --target all -- -j$(nproc)
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v3
+        with:
+          name: openvpn-libs-${{ matrix.abi }}
+          path: |
+            build/${{ matrix.abi }}/libopenvpn.so
+            build/${{ matrix.abi }}/libopvpnutil.so
+            build/${{ matrix.abi }}/libovpnexec.so
