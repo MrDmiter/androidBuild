@@ -1,4 +1,4 @@
-name: Build OpenVPN Android
+name: Build OpenVPN for Android Multi-Arch
 
 on:
   push:
