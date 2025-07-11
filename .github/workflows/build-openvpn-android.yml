@@ -19,7 +19,7 @@ jobs:
       NDK_VERSION: "25.2.9519653"
       API_LEVEL: "21"
 
-    steps:
+     steps:
       - name: Checkout code
         uses: actions/checkout@v3
 
@@ -27,14 +27,14 @@ jobs:
         uses: actions/setup-java@v3
         with:
           distribution: 'temurin'
-          java-version: '11'
+          java-version: '17'
 
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
 
       - name: Install NDK via sdkmanager
         run: sdkmanager "ndk;${{ env.NDK_VERSION }}"
-
+        
       - name: Set ANDROID_NDK_HOME
         run: echo "ANDROID_NDK_HOME=$ANDROID_SDK_ROOT/ndk/${{ env.NDK_VERSION }}" >> $GITHUB_ENV
 
