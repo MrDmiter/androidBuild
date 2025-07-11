@@ -1,66 +1,140 @@
 name: Build OpenVPN for Android Multi-Arch
 
 on:
-  push:
-    branches: [ main ]
-  pull_request:
-    branches: [ main ]
+  workflow_dispatch:
+    inputs:
+      openvpn_version:
+        description: 'OpenVPN version'
+        required: true
+        default: '2.6.14'
+      openssl_version:
+        description: 'OpenSSL version'
+        required: true
+        default: '1.1.1w'
 
 jobs:
   build:
-    name: Build for ${{ matrix.abi }}
     runs-on: ubuntu-latest
-
+    timeout-minutes: 360
     strategy:
       matrix:
-        abi: [armeabi-v7a, arm64-v8a, x86, x86_64]
-
-    env:
-      ANDROID_NDK_VERSION: "26.1.10909125"
-      CMAKE_VERSION: "3.22.1"
-      API_LEVEL: "21"  # minimum supported API level
+        # Define target Android ABIs and toolchain hosts
+        arch:
+          - { abi: "arm64-v8a", host: "aarch64-linux-android", api: "21" }
+          - { abi: "armeabi-v7a", host: "armv7a-linux-androideabi", api: "21" }
+          - { abi: "x86", host: "i686-linux-android", api: "21" }
+          - { abi: "x86_64", host: "x86_64-linux-android", api: "21" }
 
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v3
+    # Checkout the code
+    - name: Checkout
+      uses: actions/checkout@v4
 
-      - name: Set up JDK
-        uses: actions/setup-java@v3
-        with:
-          distribution: 'temurin'
-          java-version: '11'
+    # Install required packages
+    - name: Install dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y build-essential autoconf automake libtool pkg-config libcap-ng-dev
+        echo 'Downloading sources...'; 
+    # Set up the Android NDK
+    - name: Setup NDK
+      uses: nttld/setup-ndk@v1
+      with:
+        ndk-version: r25c
 
-      - name: Download Android NDK
-        uses: nttld/setup-ndk@v1
-        with:
-          ndk-version: ${{ env.ANDROID_NDK_VERSION }}
-          add-to-path: true
-
-      - name: Create build directory
-        run: mkdir -p build/${{ matrix.abi }}
-
-      - name: Configure with CMake
-        working-directory: build/${{ matrix.abi }}
-        run: |
-          cmake ../.. \
-            -DCMAKE_TOOLCHAIN_FILE=$ANDROID_NDK_HOME/build/cmake/android.toolchain.cmake \
-            -DANDROID_ABI=${{ matrix.abi }} \
-            -DANDROID_PLATFORM=android-${{ env.API_LEVEL }} \
-            -DANDROID_STL=c++_static \
-            -DCMAKE_BUILD_TYPE=Release \
-            -DCMAKE_SHARED_LINKER_FLAGS="-Wl,-z,relro,-z,now -Wl,-Ttext-segment=0x4000" \
-            -DCMAKE_C_FLAGS="-D__ANDROID__" \
-            -DCMAKE_CXX_FLAGS="-D__ANDROID__"
-
-      - name: Build libraries
-        working-directory: build/${{ matrix.abi }}
-        run: cmake --build . --target all -- -j$(nproc)
-
-      - name: Upload artifacts
-        uses: actions/upload-artifact@v3
-        with:
-          name: openvpn-libs-${{ matrix.abi }}
-          path: |
-            build/${{ matrix.abi }}/libopenvpn.so
-            build/${{ matrix.abi }}/libopvpnutil.so
-            build/${{ matrix.abi }}/libovpnexec.so
+    # Set environment variables for NDK and toolchains
+    - name: Set up env
+      run: |
+        echo "ANDROID_NDK_HOME=$ANDROID_NDK_ROOT" >> $GITHUB_ENV
+        echo "NDK_ROOT=$ANDROID_NDK_ROOT" >> $GITHUB_ENV
+        echo "$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin" >> $GITHUB_PATH
+    # Download OpenVPN and OpenSSL sources
+    - name: Download Sources
+      run: |
+        mkdir -p build
+        cd build
+        echo 'Downloading sources...'; wget https://swupdate.openvpn.org/community/releases/openvpn-${{ github.event.inputs.openvpn_version }}.tar.gz
+        echo 'Downloading sources...'; wget https://www.openssl.org/source/openssl-${{ github.event.inputs.openssl_version }}.tar.gz
+        echo 'Extracting sources...'; tar -xzf openvpn-${{ github.event.inputs.openvpn_version }}.tar.gz
+        echo 'Extracting sources...'; tar -xzf openssl-${{ github.event.inputs.openssl_version }}.tar.gz
+    # Build OpenSSL statically for each architecture
+    - name: Build OpenSSL
+      run: |
+        cd build/openssl-${{ github.event.inputs.openssl_version }}
+        make clean || true
+        case "${{ matrix.arch.abi }}" in
+          arm64-v8a) target="android-arm64" ;;
+          armeabi-v7a) target="android-arm" ;;
+          x86) target="android-x86" ;;
+          x86_64) target="android-x86_64" ;;
+        esac
+        echo "Running OpenSSL Configure with target: $target"; ./Configure $target -D__ANDROID_API__=${{ matrix.arch.api }}           --prefix=$PWD/../openssl_${{ matrix.arch.abi }}           no-shared no-tests -fPIC -DPIC
+        echo 'Running make...'; make -j$(nproc)
+        echo 'Installing OpenSSL...'; 
+        echo 'Installing OpenVPN...'; 
+        make install_sw
+    # Build OpenVPN client statically for each architecture
+    - name: Build OpenVPN
+      run: |
+        cd build
+        mkdir -p openvpn_${{ matrix.arch.abi }}
+        cd openvpn_${{ matrix.arch.abi }}
+        export CC=${{ matrix.arch.host }}${{ matrix.arch.api }}-clang
+        export CXX=${{ matrix.arch.host }}${{ matrix.arch.api }}-clang++
+        export AR=${{ matrix.arch.host }}-ar
+        export RANLIB=${{ matrix.arch.host }}-ranlib
+        export STRIP=${{ matrix.arch.host }}-strip
+        export CFLAGS="-fPIC -DPIC -O2 -DANDROID -D__ANDROID_API__=${{ matrix.arch.api }}"
+        export LDFLAGS="-Wl,-z,max-page-size=0x4000 -static-libgcc"
+        export CPPFLAGS="-DANDROID -D__ANDROID_API__=${{ matrix.arch.api }}"
+        OPENSSL_INSTALL_DIR=$PWD/../openssl_${{ matrix.arch.abi }}
+        OPENSSL_CFLAGS="-I${OPENSSL_INSTALL_DIR}/include"
+        OPENSSL_LIBS="-L${OPENSSL_INSTALL_DIR}/lib -lssl -lcrypto"
+        # Запускаємо configure OpenVPN, передаючи шляхи OpenSSL
+        ../openvpn-${{ github.event.inputs.openvpn_version }}/configure \
+          --host=${{ matrix.arch.host }} \
+          --prefix=$PWD/install \
+          --enable-static --disable-shared \
+          --disable-debug --enable-small \
+          --disable-plugins --disable-management \
+          --disable-systemd --disable-iproute2 \
+          --disable-dco --disable-selinux \
+          --disable-lz4 --disable-lzo --disable-pkcs11 \
+          --disable-server --disable-multi --disable-user-group \
+          --disable-chroot --disable-capability-dropping \
+          --disable-linuxdir --disable-dep-check \
+          --without-cap-ng --with-crypto-library=openssl \
+          ${OPENSSL_CFLAGS} \
+          ${OPENSSL_LIBS}
+        echo 'Running make for OpenVPN...'; make -j$(nproc)
+        echo 'Installing OpenVPN binaries...'; make install
+    # Build JNI shared library wrappers (libopenvpn.so, etc.)
+    - name: Create Shared Library
+      run: |
+        mkdir -p android_libs/lib/${{ matrix.arch.abi }}
+        mkdir -p src_lib
+        cat > src_lib/libopenvpn.c << 'EOF'
+        #include <jni.h>
+        #include <stdlib.h>
+        #include <unistd.h>
+        #include <string.h>
+        #include <sys/wait.h>
+        #include <android/log.h>
+        #define LOG_TAG "OpenVPN"
+        #define LOGD(...) __android_log_print(ANDROID_LOG_DEBUG, LOG_TAG, __VA_ARGS__)
+        JNIEXPORT jint JNICALL Java_com_example_OpenVPN_exec(JNIEnv* env, jobject obj, jstring command) {
+            const char* cmd = (*env)->GetStringUTFChars(env, command, 0);
+            int ret = system(cmd);
+            (*env)->ReleaseStringUTFChars(env, command, cmd);
+            return ret;
+        }
+        EOF
+        echo "Compiling JNI shared library for ${{ matrix.arch.abi }}..."; ${CC} -shared -fPIC -llog           -Wl,-z,max-page-size=0x4000           -o android_libs/lib/${{ matrix.arch.abi }}/libopenvpn.so           src_lib/libopenvpn.c
+        cp android_libs/lib/${{ matrix.arch.abi }}/libopenvpn.so android_libs/lib/${{ matrix.arch.abi }}/libopvpnutil.so
+        cp android_libs/lib/${{ matrix.arch.abi }}/libopenvpn.so android_libs/lib/${{ matrix.arch.abi }}/libovpnexec.so
+    # Upload output artifacts
+    - name: Upload artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: openvpn-libs-${{ matrix.arch.abi }}
+        path: android_libs/lib/${{ matrix.arch.abi }}
